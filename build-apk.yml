@@ -1,0 +1,181 @@
+# Builds the Prima Draw Plus V2 Android app (APK) every time you upload changes.
+# GitHub only runs this from .github/workflows/build-apk.yml (see README.md).
+# The finished APK appears on the repository's Releases page.
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Put the Android project together
+        run: |
+          set -e
+          P=android-build
+          M=$P/app/src/main
+          rm -rf $P
+          mkdir -p $M/java/com/primadraw/plusv2 $M/assets $M/res/drawable-nodpi $M/res/mipmap-anydpi-v26 $M/res/values $M/res/xml
+
+          # the drawing app (no service worker inside the app)
+          cp index.html manifest.webmanifest $M/assets/
+          cp icon-192.png icon-512.png favicon-48.png apple-touch-icon.png $M/assets/ 2>/dev/null || true
+
+          cp MainActivity.java $M/java/com/primadraw/plusv2/
+          cp AndroidManifest.xml $M/
+          cp android-icon-foreground.png $M/res/drawable-nodpi/ic_fg.png
+          cp android-icon-background.png $M/res/drawable-nodpi/ic_bg.png
+
+          cat > $M/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_bg" />
+              <foreground android:drawable="@drawable/ic_fg" />
+          </adaptive-icon>
+          EOF
+
+          cat > $M/res/values/styles.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="prima_bg">#FF3A3A3A</color>
+              <style name="PrimaTheme" parent="@android:style/Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@color/prima_bg</item>
+                  <item name="android:statusBarColor">#FF252525</item>
+                  <item name="android:navigationBarColor">#FF121212</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > $M/res/xml/file_paths.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths>
+              <cache-path name="shared" path="shared/" />
+          </paths>
+          EOF
+
+          cat > $P/settings.gradle <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'PrimaDrawPlusV2'
+          include ':app'
+          EOF
+
+          cat > $P/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat > $P/app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' }
+
+          android {
+              namespace 'com.primadraw.plusv2'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'com.primadraw.plusv2'
+                  minSdk 26
+                  targetSdk 34
+                  versionCode Integer.parseInt(System.getenv('BUILD_NUMBER') ?: '1')
+                  versionName '2.0.' + (System.getenv('BUILD_NUMBER') ?: '1')
+              }
+
+              signingConfigs {
+                  release {
+                      storeFile file(System.getenv('KEYSTORE_FILE'))
+                      storePassword System.getenv('KEYSTORE_PASSWORD')
+                      keyAlias System.getenv('KEY_ALIAS')
+                      keyPassword System.getenv('KEYSTORE_PASSWORD')
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      signingConfig signingConfigs.release
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              lint {
+                  checkReleaseBuilds false
+                  abortOnError false
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.webkit:webkit:1.11.0'
+              implementation 'androidx.core:core:1.13.1'
+          }
+          EOF
+
+
+      - name: Signing key
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          # A key saved in the repository's secrets wins; otherwise app.keystore from the repository is used.
+          # Keep using the same key, or Android will refuse to update the installed app.
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "KEYSTORE_PASSWORD=$KS_PASS" >> "$GITHUB_ENV"
+          else
+            echo "KEYSTORE_FILE=$GITHUB_WORKSPACE/app.keystore" >> "$GITHUB_ENV"
+            echo "KEYSTORE_PASSWORD=primadrawv2" >> "$GITHUB_ENV"
+          fi
+          echo "KEY_ALIAS=primadraw" >> "$GITHUB_ENV"
+
+      - name: Build the APK
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          gradle -p android-build assembleRelease --no-daemon --stacktrace
+          cp android-build/app/build/outputs/apk/release/app-release.apk PrimaDrawPlusV2.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrimaDrawPlusV2-apk
+          path: PrimaDrawPlusV2.apk
+
+      - name: Put the APK on the Releases page
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete apk --yes --cleanup-tag || true
+          gh release create apk PrimaDrawPlusV2.apk \
+            --target "${{ github.sha }}" \
+            --title "Prima Draw Plus V2 (build ${{ github.run_number }})" \
+            --notes "Open this page on your tablet, tap PrimaDrawPlusV2.apk to download it, then open it to install or update. Your drawings stay when you update."

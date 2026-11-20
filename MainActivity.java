@@ -14,6 +14,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -99,6 +100,16 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setLoadWithOverviewMode(false);
         web.addJavascriptInterface(new Bridge(), "PrimaAndroid");
+        // When the pen is lifted out of hover range, tell the page right away so the brush preview disappears.
+        web.setOnHoverListener(new View.OnHoverListener() {
+            @Override
+            public boolean onHover(View v, MotionEvent ev) {
+                if (ev.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT) {
+                    web.evaluateJavascript("window.primaHoverExit && window.primaHoverExit()", null);
+                }
+                return false;
+            }
+        });
 
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -246,6 +257,9 @@ public class MainActivity extends Activity {
     // ---------- saving and sharing files from the page ----------
 
     private class Bridge {
+        @JavascriptInterface
+        public boolean hoverHook() { return true; }
+
         @JavascriptInterface
         public String begin(String name, String mime, String mode) {
             try {

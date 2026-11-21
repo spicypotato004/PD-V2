@@ -209,6 +209,17 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
     }
 
+
+    // Catch the pen leaving the screen for the whole window (before any view sees it),
+    // so the brush dot and pen icons disappear right away.
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent ev) {
+        if (ev.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT && web != null) {
+            web.evaluateJavascript("window.primaHoverExit && window.primaHoverExit()", null);
+        }
+        return super.dispatchGenericMotionEvent(ev);
+    }
+
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {

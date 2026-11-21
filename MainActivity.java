@@ -12,6 +12,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.MotionEvent;
@@ -104,6 +105,7 @@ public class MainActivity extends Activity {
         web.setOnHoverListener(new View.OnHoverListener() {
             @Override
             public boolean onHover(View v, MotionEvent ev) {
+                notePenHover(ev);
                 if (ev.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT) {
                     web.evaluateJavascript("window.primaHoverExit && window.primaHoverExit()", null);
                 }
@@ -212,8 +214,31 @@ public class MainActivity extends Activity {
 
     // Catch the pen leaving the screen for the whole window (before any view sees it),
     // so the brush dot and pen icons disappear right away.
+    // Is the pen hovering over the screen right now? The page asks this so the brush / eraser circle
+    // stays while the pen is held still, and goes away the moment the pen is lifted out of range.
+    private volatile boolean penHover = false;
+    private volatile long penHoverT = 0;
+
+    private void notePenHover(MotionEvent ev) {
+        int a = ev.getActionMasked();
+        if (a == MotionEvent.ACTION_HOVER_EXIT) { penHover = false; return; }
+        if (a != MotionEvent.ACTION_HOVER_ENTER && a != MotionEvent.ACTION_HOVER_MOVE) return;
+        int tt = ev.getToolType(0);
+        if (tt == MotionEvent.TOOL_TYPE_STYLUS || tt == MotionEvent.TOOL_TYPE_ERASER) {
+            penHover = true;
+            penHoverT = SystemClock.uptimeMillis();
+        }
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) penHover = false;   // touching the screen is not hovering
+        return super.dispatchTouchEvent(ev);
+    }
+
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent ev) {
+        notePenHover(ev);
         if (ev.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT && web != null) {
             web.evaluateJavascript("window.primaHoverExit && window.primaHoverExit()", null);
         }
@@ -270,6 +295,9 @@ public class MainActivity extends Activity {
     private class Bridge {
         @JavascriptInterface
         public boolean hoverHook() { return true; }
+
+        @JavascriptInterface
+        public boolean penHovering() { return penHover && SystemClock.uptimeMillis() - penHoverT < 1500; }
 
         @JavascriptInterface
         public String begin(String name, String mime, String mode) {

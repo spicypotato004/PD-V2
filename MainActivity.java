@@ -8,6 +8,7 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -15,6 +16,7 @@ import android.os.Environment;
 import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.view.DisplayCutout;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -49,6 +51,8 @@ import java.util.Map;
  * The drawing app itself is index.html (in assets). It is served from a https:// address inside
  * the app (WebViewAssetLoader) so the password lock, saved drawings and settings all work.
  * The bridge "PrimaAndroid" lets the page save files to the tablet and open the share sheet.
+ * The page is drawn edge to edge: the canvas runs under the system navigation buttons (like ibisPaint),
+ * and the page is told how big they are so its own buttons stay clear of them.
  */
 public class MainActivity extends Activity {
     private static final String HOST = "appassets.androidplatform.net";
@@ -60,6 +64,9 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> pickCallback;
     private long lastBack;
 
+    // size of the system navigation buttons (and any screen cutout), in CSS pixels: bottom,left,right,top
+    private volatile String insets = "0,0,0,0";
+
     private static final class Pending {
         String name, mime, mode;
         File file;
@@ -70,9 +77,15 @@ public class MainActivity extends Activity {
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     @Override
+    @SuppressWarnings("deprecation")
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        getWindow().setNavigationBarColor(Color.rgb(18, 18, 18));
+        // edge to edge: the app draws behind the navigation buttons, which become see-through
+        // (the page itself draws the dark see-through strip under them)
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= 29) getWindow().setNavigationBarContrastEnforced(false);
+        if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
         if (Build.VERSION.SDK_INT >= 28) {
             WindowManager.LayoutParams lp = getWindow().getAttributes();
             lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
@@ -112,6 +125,11 @@ public class MainActivity extends Activity {
                 return false;
             }
         });
+        // the navigation buttons' size: stored for the page to ask for, and the page is told when it changes
+        web.setOnApplyWindowInsetsListener((v, in) -> {
+            noteInsets(in);
+            return v.onApplyWindowInsets(in);
+        });
 
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -125,6 +143,11 @@ public class MainActivity extends Activity {
                 if (HOST.equals(u.getHost())) return false;
                 openOutside(u);
                 return true;
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                view.evaluateJavascript("window.primaInsets && window.primaInsets()", null);
             }
 
             @Override
@@ -171,6 +194,28 @@ public class MainActivity extends Activity {
         web.loadUrl(START);
     }
 
+    @SuppressWarnings("deprecation")
+    private void noteInsets(WindowInsets in) {
+        int b, l, r, t = 0;
+        if (Build.VERSION.SDK_INT >= 30) {
+            Insets n = in.getInsets(WindowInsets.Type.navigationBars());
+            Insets c = in.getInsets(WindowInsets.Type.displayCutout());
+            b = Math.max(n.bottom, c.bottom); l = Math.max(n.left, c.left); r = Math.max(n.right, c.right); t = c.top;
+        } else {
+            b = in.getSystemWindowInsetBottom(); l = in.getSystemWindowInsetLeft(); r = in.getSystemWindowInsetRight();
+            if (Build.VERSION.SDK_INT >= 28) {
+                DisplayCutout c = in.getDisplayCutout();
+                if (c != null) { t = c.getSafeInsetTop(); b = Math.max(b, c.getSafeInsetBottom()); l = Math.max(l, c.getSafeInsetLeft()); r = Math.max(r, c.getSafeInsetRight()); }
+            }
+        }
+        float d = getResources().getDisplayMetrics().density;
+        String v = Math.round(b / d) + "," + Math.round(l / d) + "," + Math.round(r / d) + "," + Math.round(t / d);
+        if (v.equals(insets)) return;
+        insets = v;
+        if (web != null) web.post(() -> { if (web != null) web.evaluateJavascript("window.primaInsets && window.primaInsets()", null); });
+    }
+
+    @SuppressWarnings("deprecation")
     private void hideStatusBar() {
         if (Build.VERSION.SDK_INT >= 30) {
             WindowInsetsController c = getWindow().getInsetsController();
@@ -179,7 +224,9 @@ public class MainActivity extends Activity {
                 c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
             }
         } else {
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN);
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
         }
     }
 
@@ -298,6 +345,10 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public boolean penHovering() { return penHover && SystemClock.uptimeMillis() - penHoverT < 1500; }
+
+        /** "bottom,left,right,top" in CSS pixels: the system navigation buttons (and any cutout) the page draws under. */
+        @JavascriptInterface
+        public String insets() { return insets; }
 
         @JavascriptInterface
         public String begin(String name, String mime, String mode) {
